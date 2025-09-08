@@ -18,32 +18,31 @@ const UPLOAD_DIR = path.join(__dirname, process.env.UPLOAD_DIR || "uploads");
 const DATA_DIR = path.join(__dirname, "data");
 const DB_FILE = path.join(DATA_DIR, "registrations.json");
 
-// Frontend URL (exact match)
+// Allowed frontend
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "http://localhost:5173";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "VishalRajput2003";
 
-// Ensure directories and DB file exist
+// Ensure directories & DB exist
 [UPLOAD_DIR, DATA_DIR].forEach((dir) => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
-if (!fs.existsSync(DB_FILE))
+if (!fs.existsSync(DB_FILE)) {
   fs.writeFileSync(DB_FILE, JSON.stringify([]), "utf8");
+}
 
 // ----- Helpers -----
 const readDB = () => {
   try {
     return JSON.parse(fs.readFileSync(DB_FILE, "utf8") || "[]");
-  } catch (e) {
-    console.error("Error reading DB:", e);
+  } catch (err) {
+    console.error("❌ Error reading DB:", err);
     return [];
   }
 };
-
 const writeDB = (rows) => {
   fs.writeFileSync(DB_FILE, JSON.stringify(rows, null, 2), "utf8");
 };
 
-// NanoID
 const nanoid = customAlphabet("123456789ABCDEFGHJKLMNPQRSTUVWXYZ", 10);
 
 // ----- Fees -----
@@ -80,8 +79,9 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage,
   fileFilter: (_req, file, cb) => {
-    if (!file.mimetype?.toLowerCase().includes("pdf"))
+    if (!file.mimetype?.toLowerCase().includes("pdf")) {
       return cb(new Error("Only PDF uploads are allowed"));
+    }
     cb(null, true);
   },
   limits: { fileSize: 20 * 1024 * 1024 }, // 20MB
@@ -89,24 +89,21 @@ const upload = multer({
 
 // ----- Express Setup -----
 const app = express();
-
-// CORS only allows your frontend URL
 app.use(cors({ origin: ALLOWED_ORIGIN }));
 app.use(express.json());
 app.use("/uploads", express.static(UPLOAD_DIR));
 
 // ----- Admin Password Check -----
 const checkAdminPassword = (req) => {
-  const pass = (
-    req.query.password ||
-    req.headers["x-admin-password"] ||
-    ""
-  ).toString();
-  return pass === ADMIN_PASSWORD;
+  const pass =
+    req.query.password || req.headers["x-admin-password"] || "";
+  return pass.toString() === ADMIN_PASSWORD;
 };
 
 // ----- Routes -----
-app.get("/", (_req, res) => res.send("✅ Conference Portal API is running"));
+app.get("/", (_req, res) =>
+  res.send("✅ Conference Portal API is running")
+);
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 app.get("/api/fees", (_req, res) => res.json(FEES));
 
@@ -115,10 +112,13 @@ app.post("/api/register", upload.single("paper"), (req, res) => {
   try {
     const { category, region, paperId, name, organization, email, mobile } =
       req.body;
-    if (!category || !region || !name || !email || !mobile)
+
+    if (!category || !region || !name || !email || !mobile) {
       return res.status(400).json({ error: "Missing required fields" });
-    if (!FEES[category]?.[region])
+    }
+    if (!FEES[category]?.[region]) {
       return res.status(400).json({ error: "Invalid category or region" });
+    }
 
     const { currency, amount } = FEES[category][region];
     const id = nanoid();
@@ -146,6 +146,7 @@ app.post("/api/register", upload.single("paper"), (req, res) => {
       payment_method: null,
       payer_email: null,
     };
+
     rows.push(rec);
     writeDB(rows);
 
@@ -156,18 +157,18 @@ app.post("/api/register", upload.single("paper"), (req, res) => {
       file: file ? `/uploads/${file.filename}` : null,
     });
   } catch (err) {
-    console.error("Registration error:", err);
+    console.error("❌ Registration error:", err);
     res.status(500).json({ error: "Registration failed" });
   }
 });
 
-// ----- Payment Confirmation -----
+// ----- Payment Confirmation (User) -----
 app.post("/api/confirm-payment/:id", (req, res) => {
   try {
     const { id } = req.params;
     const { transactionId, method, email } = req.body;
 
-    let rows = readDB();
+    const rows = readDB();
     const rec = rows.find((r) => r.id === id);
     if (!rec) return res.status(404).json({ error: "Registration not found" });
 
@@ -186,32 +187,38 @@ app.post("/api/confirm-payment/:id", (req, res) => {
     writeDB(rows);
     res.json({ ok: true, id });
   } catch (err) {
-    console.error("Payment error:", err);
+    console.error("❌ Payment error:", err);
     res.status(500).json({ error: "Payment confirmation failed" });
   }
 });
 
 // ----- Admin APIs -----
 app.get("/api/admin/registrations", (req, res) => {
-  if (!checkAdminPassword(req))
+  if (!checkAdminPassword(req)) {
     return res.status(401).json({ error: "Unauthorized" });
+  }
 
   const q = (req.query.q || "").toLowerCase();
   let rows = readDB().slice().reverse();
-  if (q)
+  if (q) {
     rows = rows.filter((r) =>
       (r.id + r.name + r.paper_id).toLowerCase().includes(q)
     );
+  }
 
   const withUrls = rows.map((r) => ({
     ...r,
     paper_url: r.paper_filename ? `/uploads/${r.paper_filename}` : null,
   }));
+
   res.json(withUrls);
 });
 
+// Export CSV
 app.get("/api/admin/export", (req, res) => {
-  if (!checkAdminPassword(req)) return res.status(401).send("Unauthorized");
+  if (!checkAdminPassword(req)) {
+    return res.status(401).send("Unauthorized");
+  }
 
   const rows = readDB().slice().reverse();
   const headers = [
@@ -251,16 +258,28 @@ app.get("/api/admin/export", (req, res) => {
   res.end();
 });
 
+// Mark as Paid / Unpaid (Admin Only)
+app.post("/api/admin/mark-paid/:id", (req, res) => {
+  if (!checkAdminPassword(req)) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const { id } = req.params;
+  const { paid } = req.body; // true or false
+
+  const rows = readDB();
+  const rec = rows.find((r) => r.id === id);
+  if (!rec) return res.status(404).json({ error: "Registration not found" });
+
+  rec.paid = paid ? 1 : 0;
+  rec.paid_at = paid ? new Date().toISOString() : null;
+
+  writeDB(rows);
+  res.json({ ok: true, registration: rec });
+});
+
 // ----- Start Server -----
 app.listen(PORT, () => {
-  console.log(
-    `🚀 Server live on: ${
-      process.env.SERVER_URL || `https://scholarhub1-2.onrender.com`
-    }`
-  );
-  console.log(
-    `🔑 Admin dashboard: ${
-      process.env.SERVER_URL || `https://scholarhub1-2.onrender.com`
-    }/admin (use ?password=${ADMIN_PASSWORD})`
-  );
+  console.log(`🚀 Server live on: ${process.env.SERVER_URL || `http://localhost:${PORT}`}`);
+  console.log(`🔑 Admin dashboard: ${(process.env.SERVER_URL || `http://localhost:${PORT}`)}/admin (use ?password=${ADMIN_PASSWORD})`);
 });
