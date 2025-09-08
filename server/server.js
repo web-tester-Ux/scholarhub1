@@ -87,6 +87,21 @@ const upload = multer({
   limits: { fileSize: 20 * 1024 * 1024 }, // 20MB
 });
 
+// Multer for payment proof (image/pdf)
+const paymentUpload = multer({
+  storage,
+  fileFilter: (_req, file, cb) => {
+    if (
+      !file.mimetype?.toLowerCase().includes("image") &&
+      !file.mimetype?.toLowerCase().includes("pdf")
+    ) {
+      return cb(new Error("Only image or PDF uploads are allowed"));
+    }
+    cb(null, true);
+  },
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+});
+
 // ----- Express Setup -----
 const app = express();
 app.use(cors({ origin: ALLOWED_ORIGIN }));
@@ -145,6 +160,8 @@ app.post("/api/register", upload.single("paper"), (req, res) => {
       transaction_id: null,
       payment_method: null,
       payer_email: null,
+      payment_proof_filename: null,
+      payment_proof_original: null,
     };
 
     rows.push(rec);
@@ -163,34 +180,50 @@ app.post("/api/register", upload.single("paper"), (req, res) => {
 });
 
 // ----- Payment Confirmation (User) -----
-app.post("/api/confirm-payment/:id", (req, res) => {
-  try {
-    const { id } = req.params;
-    const { transactionId, method, email } = req.body;
+app.post(
+  "/api/confirm-payment/:id",
+  paymentUpload.single("screenshot"),
+  (req, res) => {
+    try {
+      const { id } = req.params;
+      const { transactionId, method, email } = req.body;
+      const file = req.file;
 
-    const rows = readDB();
-    const rec = rows.find((r) => r.id === id);
-    if (!rec) return res.status(404).json({ error: "Registration not found" });
+      if (!file) {
+        return res
+          .status(400)
+          .json({ error: "Payment proof screenshot is required" });
+      }
 
-    if (rec.email && rec.email.toLowerCase() !== email.toLowerCase()) {
-      return res
-        .status(400)
-        .json({ error: "Email does not match registration" });
+      const rows = readDB();
+      const rec = rows.find((r) => r.id === id);
+      if (!rec)
+        return res
+          .status(404)
+          .json({ error: "Registration not found" });
+
+      if (rec.email && rec.email.toLowerCase() !== email.toLowerCase()) {
+        return res
+          .status(400)
+          .json({ error: "Email does not match registration" });
+      }
+
+      rec.paid = 1;
+      rec.paid_at = new Date().toISOString();
+      rec.transaction_id = transactionId;
+      rec.payment_method = method;
+      rec.payer_email = email;
+      rec.payment_proof_filename = file.filename;
+      rec.payment_proof_original = file.originalname;
+
+      writeDB(rows);
+      res.json({ ok: true, id });
+    } catch (err) {
+      console.error("❌ Payment error:", err);
+      res.status(500).json({ error: "Payment confirmation failed" });
     }
-
-    rec.paid = 1;
-    rec.paid_at = new Date().toISOString();
-    rec.transaction_id = transactionId;
-    rec.payment_method = method;
-    rec.payer_email = email;
-
-    writeDB(rows);
-    res.json({ ok: true, id });
-  } catch (err) {
-    console.error("❌ Payment error:", err);
-    res.status(500).json({ error: "Payment confirmation failed" });
   }
-});
+);
 
 // ----- Admin APIs -----
 app.get("/api/admin/registrations", (req, res) => {
@@ -209,6 +242,9 @@ app.get("/api/admin/registrations", (req, res) => {
   const withUrls = rows.map((r) => ({
     ...r,
     paper_url: r.paper_filename ? `/uploads/${r.paper_filename}` : null,
+    payment_proof_url: r.payment_proof_filename
+      ? `/uploads/${r.payment_proof_filename}`
+      : null,
   }));
 
   res.json(withUrls);
@@ -240,6 +276,8 @@ app.get("/api/admin/export", (req, res) => {
     "transaction_id",
     "payment_method",
     "payer_email",
+    "payment_proof_filename",
+    "payment_proof_original",
   ];
 
   res.setHeader("Content-Type", "text/csv");
@@ -280,6 +318,12 @@ app.post("/api/admin/mark-paid/:id", (req, res) => {
 
 // ----- Start Server -----
 app.listen(PORT, () => {
-  console.log(`🚀 Server live on: ${process.env.SERVER_URL || `http://localhost:${PORT}`}`);
-  console.log(`🔑 Admin dashboard: ${(process.env.SERVER_URL || `http://localhost:${PORT}`)}/admin (use ?password=${ADMIN_PASSWORD})`);
+  console.log(
+    `🚀 Server live on: ${process.env.SERVER_URL || `http://localhost:${PORT}`}`
+  );
+  console.log(
+    `🔑 Admin dashboard: ${
+      process.env.SERVER_URL || `http://localhost:${PORT}`
+    }/admin (use ?password=${ADMIN_PASSWORD})`
+  );
 });
